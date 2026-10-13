@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { config } from "./config";
+import { DecisionPipeline } from "./decision-pipeline";
 import { Market, type Book, type Fill, type Quote, type QuoteResult, type Side } from "./market";
 import type { Action, Decision, Model, TradeState } from "./model";
 import { TradeFeed, type MakerFill, type TradePrint } from "./trades";
@@ -11,7 +12,9 @@ export interface BlockEvent {
   bestBid: number;
   bestAsk: number;
   spreadBps: number;
-  decision: { action: Action; probabilities: Record<Action, number>; upIn10: number; latencyMs: number; late: boolean } | null;
+  decision:
+    | { action: Action; probabilities: Record<Action, number>; upIn10: number; latencyMs: number; late: boolean; decisionAgeBlocks: number }
+    | null;
   /** The order this block put on the book. */
   quote: Quote | null;
   /** Maker fills that landed in this block (aggregated), attached when the trade logs for it arrive. */
@@ -44,9 +47,15 @@ export interface Totals {
 interface Resting { side: Side; price: number; size: number; block: number }
 
 /**
- * Every block: read the book, ask the model buy or sell, and post one post-only limit order on
- * that side (`quoteInsideTicks` inside the touch), cancelling whatever we had resting. One request
- * in flight; a block that arrives while the previous one is still running is emitted as late.
+ * Every block: read the book and post one post-only limit order on the model's side
+ * (`quoteInsideTicks` inside the touch), cancelling whatever we had resting.
+ *
+ * The model call is decoupled from the block clock via `DecisionPipeline`: at most one `decide()`
+ * is in flight, started fresh whenever the previous one has resolved, but a block never waits on
+ * it. Every block acts on the most recently completed decision — `decisionAgeBlocks` on the
+ * emitted event says how many blocks old that decision is (0 means it just landed). A block is
+ * only "late" (no order posted) before the very first decision has ever resolved, or if the book
+ * read + order send itself overlaps with the previous block's (guarded by `busy`).
  *
  * Live sends are fire-and-forget: the block event carries the quote as `sent`; its receipt
  * (`placed` with an order id, or `reverted`) is applied when it turns up on a later block. Fills
@@ -59,6 +68,9 @@ export class Trader {
   private busy = false;
   private lastBook: Book | null = null;
   private trades: TradeFeed | null = null;
+  private pipeline: DecisionPipeline;
+  /** The block whose decision we last counted into totals.decisions/jevUsd, so a reused (stale) decision is only billed once. */
+  private lastCountedDecisionBlock: number | null = null;
   /** Orders we know are resting on the book (live: from receipts; dry run: last block's simulated order). */
   private orders = new Map<number, Resting>();
   /** Live quotes sent but not yet confirmed; they may become resting orders, so they count toward the cap. */
@@ -75,6 +87,7 @@ export class Trader {
     private onQuote: (block: number, quote: Quote) => void = () => {},
   ) {
     mkdirSync("data", { recursive: true });
+    this.pipeline = new DecisionPipeline(model);
   }
 
   /** Call once the market params are known. Without it `trades` in the state is all zeros and no fills are ever seen. */
@@ -88,7 +101,7 @@ export class Trader {
     if (this.totals.blocks % config.refreshBlocks === 0) this.market.refresh().catch(() => {}); // fee estimate + margin + vault check
     if (this.busy) {
       this.totals.lateBlocks++;
-      if (this.lastBook) this.emit(block, this.lastBook, null, null, true);
+      if (this.lastBook) this.emit(block, this.lastBook, null, null, true, undefined, 0);
       return;
     }
     this.busy = true;
@@ -101,17 +114,40 @@ export class Trader {
       if (this.mids.length > 400) this.mids.shift();
       this.trades?.poll(block).then(() => this.harvest()); // off the hot path: eth_getLogs for prints (and our fills) since the last poll
 
-      const decision = await this.model.decide(this.buildState(block, book));
+      // Kicks off a fresh decide() unless one from an earlier block is still in flight; never awaited here.
+      this.pipeline.request(block, this.buildState(block, book));
+      const pipelined = this.pipeline.current();
+      if (!pipelined) {
+        // No decision has ever completed yet (startup) - nothing to act on this block.
+        this.totals.lateBlocks++;
+        this.emit(block, book, null, null, true, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) }, 0);
+        return;
+      }
+
+      const decisionAgeBlocks = block - pipelined.block;
+      if (decisionAgeBlocks > config.maxDecisionAgeBlocks) {
+        // The in-flight decide() is taking pathologically long; the market state it would act on is
+        // too old to trust. Hold rather than keep re-posting on a stale call.
+        this.totals.lateBlocks++;
+        this.emit(block, book, null, null, true, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) }, 0);
+        return;
+      }
+
+      const decision = pipelined.decision;
       const wanted: Side = decision.action === "sell" ? "sell" : "buy";
       const other: Side = wanted === "buy" ? "sell" : "buy";
       // The position cap (and, live, margin funds) can only pick the reducing side. The probabilities still show the model's call.
       const side: Side | null = this.allowed(wanted, book) ? wanted : this.allowed(other, book) ? other : null;
-      this.totals.decisions++;
-      this.totals.jevUsd += (decision.inputTokens / 1e6) * config.jevUsdPerMTok;
+      if (pipelined.block !== this.lastCountedDecisionBlock) {
+        // A reused (stale) decision is counted once, the first block that sees it - not again every
+        // later block that keeps acting on it while the next decide() call is still in flight.
+        this.lastCountedDecisionBlock = pipelined.block;
+        this.totals.decisions++;
+        this.totals.jevUsd += (decision.inputTokens / 1e6) * config.jevUsdPerMTok;
+      }
 
       let quote: Quote | null = null;
       if (side) {
-        decision.action = side;
         const cancel = [...this.orders.keys()].filter((id) => id > 0); // simulated orders have negative ids
         quote = await this.market.send(block, side, config.tradeSizeMon, book, cancel, side !== wanted);
         this.totals.quotes++;
@@ -122,7 +158,10 @@ export class Trader {
           this.inflight.set(quote.txHash, quote);
         }
       }
-      this.emit(block, book, decision, quote, false, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) });
+      // A local copy with the resolved side: `decision` is cached in the pipeline and may still be
+      // in use by a later block while it's stale, so it's never mutated in place.
+      const emitted: Decision = { ...decision, action: side ?? decision.action };
+      this.emit(block, book, emitted, quote, false, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) }, decisionAgeBlocks);
     } catch (e) {
       console.error(`block ${block}:`, (e as Error).message);
     } finally {
@@ -264,7 +303,7 @@ export class Trader {
   private entryPrice() { return this.position.mon ? this.position.costUsd / this.position.mon : null; }
   private unrealizedUsd(mid: number) { return this.position.mon ? this.position.mon * (mid - this.entryPrice()!) : 0; }
 
-  private emit(block: number, book: Book, decision: Decision | null, quote: Quote | null, late: boolean, timing?: Timing) {
+  private emit(block: number, book: Book, decision: Decision | null, quote: Quote | null, late: boolean, timing: Timing | undefined, decisionAgeBlocks: number) {
     const t = this.totals;
     t.gasUsd = t.gasMon * book.mid;
     const unrealized = this.unrealizedUsd(book.mid);
@@ -275,8 +314,8 @@ export class Trader {
     const event: BlockEvent = {
       block, ts: Date.now(), mid: book.mid, bestBid: book.bid, bestAsk: book.ask, spreadBps: round(book.spreadBps, 2),
       decision: late
-        ? { action: "hold", probabilities: { buy: 0, sell: 0, hold: 1 }, upIn10: 0.5, latencyMs: 0, late: true }
-        : decision && { action: decision.action, probabilities: decision.probabilities, upIn10: decision.upIn10, latencyMs: Math.round(decision.latencyMs), late: false },
+        ? { action: "hold", probabilities: { buy: 0, sell: 0, hold: 1 }, upIn10: 0.5, latencyMs: 0, late: true, decisionAgeBlocks: 0 }
+        : decision && { action: decision.action, probabilities: decision.probabilities, upIn10: decision.upIn10, latencyMs: Math.round(decision.latencyMs), late: false, decisionAgeBlocks },
       quote,
       fill: null,
       resting: { bidMon: round(this.restingMon("buy"), 1), askMon: round(this.restingMon("sell"), 1) },
