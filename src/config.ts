@@ -20,6 +20,11 @@ export const config = {
   bankrollUsd: Number(env("BANKROLL_USD", "100")), // used for pnlPct
   /** Quote this many ticks inside the touch (0 = join the best bid/ask). Never crosses: clamps to the touch when the spread is too tight. */
   quoteInsideTicks: Number(env("QUOTE_INSIDE_TICKS", "1")),
+  /** Gas saver: only post a new order when the mid moved at least this many bps since the last post,
+   *  or when POST_REFRESH_BLOCKS blocks have passed. Keeps the resting order (no cancel) in between,
+   *  so the gas cost drops from every-block to only-when-it-matters. 0 = post every block (old behaviour). */
+  postMoveBps: Number(env("POST_MOVE_BPS", "5")),
+  postRefreshBlocks: Number(env("POST_REFRESH_BLOCKS", "20")),
   /** Startup deposits into the Kuru margin account, topped up to these balances. Limit orders draw from margin, not the wallet. */
   marginMon: Number(env("MARGIN_MON", "600")),
   marginUsdc: Number(env("MARGIN_USDC", "20")),

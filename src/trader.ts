@@ -3,6 +3,7 @@ import { config } from "./config";
 import { Market, type Book, type Fill, type Quote, type QuoteResult, type Side } from "./market";
 import type { Action, Decision, Model, TradeState } from "./model";
 import { TradeFeed, type MakerFill, type TradePrint } from "./trades";
+import { shouldPost, type PostState } from "./postpolicy";
 
 export interface BlockEvent {
   block: number;
@@ -14,6 +15,8 @@ export interface BlockEvent {
   decision: { action: Action; probabilities: Record<Action, number>; upIn10: number; latencyMs: number; late: boolean } | null;
   /** The order this block put on the book. */
   quote: Quote | null;
+  /** Why no order was posted this block: "no-move" (gas saver kept the resting order) or "cap" (position/margin blocked both sides). */
+  skipReason: "no-move" | "cap" | null;
   /** Maker fills that landed in this block (aggregated), attached when the trade logs for it arrive. */
   fill: Fill | null;
   /** Our size known to be resting on the book after this block's order. */
@@ -52,6 +55,10 @@ interface Resting { side: Side; price: number; size: number; block: number }
  * (`placed` with an order id, or `reverted`) is applied when it turns up on a later block. Fills
  * come from the Trade log feed: a taker hit one of our resting orders. Dry runs simulate both:
  * the order rests for one block and fills when a real print crosses its price.
+ *
+ * Gas saver: we do not post every block. `shouldPost` decides whether the market moved enough
+ * (or the refresh interval elapsed) to justify a new order; in between, the existing resting
+ * order stays on the book untouched (no cancel, no send). We always post when nothing is resting.
  */
 export class Trader {
   readonly history: BlockEvent[] = [];
@@ -65,6 +72,8 @@ export class Trader {
   private inflight = new Map<string, Quote>();
   private simId = 0;
   private position = { mon: 0, costUsd: 0 }; // signed inventory and its cost basis
+  /** Last block we actually posted an order (gas saver: we skip posting when the market hasn't moved). */
+  private lastPost: PostState = { block: 0, mid: 0 };
   private totals: Totals = { blocks: 0, decisions: 0, quotes: 0, fills: 0, reverted: 0, lateBlocks: 0, jevUsd: 0, gasMon: 0, gasUsd: 0, realizedUsd: 0, pnlUsd: 0, pnlMon: 0, pnlPct: 0 };
 
   constructor(
@@ -110,19 +119,31 @@ export class Trader {
       this.totals.jevUsd += (decision.inputTokens / 1e6) * config.jevUsdPerMTok;
 
       let quote: Quote | null = null;
+      let skipReason: BlockEvent["skipReason"] = null;
       if (side) {
         decision.action = side;
-        const cancel = [...this.orders.keys()].filter((id) => id > 0); // simulated orders have negative ids
-        quote = await this.market.send(block, side, config.tradeSizeMon, book, cancel, side !== wanted);
-        this.totals.quotes++;
-        if (quote.status === "sim") {
-          this.orders.clear(); // the simulated cancel
-          this.orders.set(--this.simId, { side, price: quote.price, size: quote.size, block });
-        } else if (quote.txHash) {
-          this.inflight.set(quote.txHash, quote);
+        // Gas saver: skip posting when the market hasn't moved enough since the last post, unless
+        // nothing is resting (then we must post to have an order on the book). The existing resting
+        // order stays untouched in between — no cancel, no send.
+        const nothingResting = this.orders.size === 0 && this.inflight.size === 0;
+        if (nothingResting || shouldPost(this.lastPost, block, book.mid, { moveBps: config.postMoveBps, refreshBlocks: config.postRefreshBlocks })) {
+          const cancel = [...this.orders.keys()].filter((id) => id > 0); // simulated orders have negative ids
+          quote = await this.market.send(block, side, config.tradeSizeMon, book, cancel, side !== wanted);
+          this.totals.quotes++;
+          this.lastPost = { block, mid: book.mid };
+          if (quote.status === "sim") {
+            this.orders.clear(); // the simulated cancel
+            this.orders.set(--this.simId, { side, price: quote.price, size: quote.size, block });
+          } else if (quote.txHash) {
+            this.inflight.set(quote.txHash, quote);
+          }
+        } else {
+          skipReason = "no-move";
         }
+      } else {
+        skipReason = "cap";
       }
-      this.emit(block, book, decision, quote, false, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) });
+      this.emit(block, book, decision, quote, false, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) }, skipReason);
     } catch (e) {
       console.error(`block ${block}:`, (e as Error).message);
     } finally {
@@ -264,7 +285,7 @@ export class Trader {
   private entryPrice() { return this.position.mon ? this.position.costUsd / this.position.mon : null; }
   private unrealizedUsd(mid: number) { return this.position.mon ? this.position.mon * (mid - this.entryPrice()!) : 0; }
 
-  private emit(block: number, book: Book, decision: Decision | null, quote: Quote | null, late: boolean, timing?: Timing) {
+  private emit(block: number, book: Book, decision: Decision | null, quote: Quote | null, late: boolean, timing?: Timing, skipReason: BlockEvent["skipReason"] = null) {
     const t = this.totals;
     t.gasUsd = t.gasMon * book.mid;
     const unrealized = this.unrealizedUsd(book.mid);
@@ -278,6 +299,7 @@ export class Trader {
         ? { action: "hold", probabilities: { buy: 0, sell: 0, hold: 1 }, upIn10: 0.5, latencyMs: 0, late: true }
         : decision && { action: decision.action, probabilities: decision.probabilities, upIn10: decision.upIn10, latencyMs: Math.round(decision.latencyMs), late: false },
       quote,
+      skipReason,
       fill: null,
       resting: { bidMon: round(this.restingMon("buy"), 1), askMon: round(this.restingMon("sell"), 1) },
       position: {
