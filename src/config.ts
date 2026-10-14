@@ -37,6 +37,9 @@ export const config = {
   pendingBlocks: 10, // give up on a tx with no receipt after this many blocks
   refreshBlocks: 200, // how often to refresh the fee estimate, margin balances and the vault check
   horizonBlocks: Number(env("HORIZON_BLOCKS", "100")), // the model is asked about the move over this many blocks (~30 s)
+  /** A decide() call decoupled from the block clock (DecisionPipeline) can run long; past this many
+   *  blocks old, its decision is treated as stale and the block holds rather than keep trading on it. */
+  maxDecisionAgeBlocks: Number(env("MAX_DECISION_AGE_BLOCKS", "20")),
   model: env("MODEL", "mock") as "mock" | "jev",
   jevModelId: env("JEV_MODEL_ID", "jev-latest")!,
   jevUsdPerMTok: 0.042,

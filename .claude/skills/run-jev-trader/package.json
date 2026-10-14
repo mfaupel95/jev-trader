@@ -1,0 +1,7 @@
+{
+  "name": "run-jev-trader-driver",
+  "private": true,
+  "dependencies": {
+    "playwright": "^1.64.0"
+  }
+}

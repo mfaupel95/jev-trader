@@ -87,7 +87,10 @@ export default function Feed({ events }: { events: BlockEvent[] }) {
                     decision.probabilities.hold,
                   ).toFixed(2);
 
-            const lat = !decided || !decision ? "" : `${decision.latencyMs}ms`;
+            const lat =
+              !decided || !decision
+                ? ""
+                : `${decision.latencyMs}ms${decision.decisionAgeBlocks > 0 ? ` +${decision.decisionAgeBlocks}` : ""}`;
 
             let detail = "";
             let detailMuted = false;
@@ -111,7 +114,12 @@ export default function Feed({ events }: { events: BlockEvent[] }) {
                 <span className={`${styles.cell} ${styles.block}`}>{fmtInt(event.block)}</span>
                 <span className={`${styles.cell} ${styles.word}`}>{WORD[kind]}</span>
                 <span className={`${styles.cell} ${styles.conf}`}>{conf}</span>
-                <span className={`${styles.cell} ${styles.lat}`}>{lat}</span>
+                <span
+                  className={`${styles.cell} ${styles.lat}`}
+                  title={decided && decision && decision.decisionAgeBlocks > 0 ? `decision is ${decision.decisionAgeBlocks} block(s) old` : undefined}
+                >
+                  {lat}
+                </span>
                 <span
                   className={`${styles.cell} ${styles.detail}${detailMuted ? ` ${styles.muted}` : ""}`}
                 >

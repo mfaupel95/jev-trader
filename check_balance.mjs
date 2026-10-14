@@ -1,0 +1,14 @@
+import { ethers } from "ethers";
+import { config } from "./src/config.ts";
+import * as Kuru from "@kuru-labs/kuru-sdk";
+const rpc = new ethers.providers.JsonRpcProvider(config.rpcUrl);
+const addr = new ethers.Wallet(config.privateKey).address;
+const mon = await rpc.getBalance(addr);
+console.log("ADDR", addr);
+console.log("MON", ethers.utils.formatEther(mon));
+const params = await Kuru.ParamFetcher.getMarketParams(rpc, config.market);
+const usdcAddr = params.quoteAssetAddress;
+console.log("USDC_ADDR", usdcAddr);
+const c = new ethers.Contract(usdcAddr, ["function balanceOf(address) view returns (uint256)"], rpc);
+const u = await c.balanceOf(addr);
+console.log("USDC", ethers.utils.formatUnits(u, params.quoteAssetDecimals.toNumber()));
