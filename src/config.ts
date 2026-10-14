@@ -7,6 +7,10 @@ export const config = {
   wsUrl: env("WS_URL"), // optional; polling backstop always runs
   chainId: 143,
   market: env("MARKET", "0x065C9d28E428A0db40191a54d33d5b7c71a9C394")!, // Kuru MON-USDC
+  /** Human label for the model prompt, e.g. "WETH-USDC". Defaults to the MON-USDC market. */
+  marketLabel: env("MARKET_LABEL", "MON-USDC"),
+  /** Base asset symbol for the model prompt, e.g. "WETH". Defaults to MON. */
+  baseSymbol: env("BASE_SYMBOL", "MON"),
   /** Kuru MarginAccount this market settles against (slot 73 of the OrderBook proxy; verifiedMarket(market) is true). */
   marginAccount: env("MARGIN_ACCOUNT", "0x2A68ba1833cDf93fa9Da1EEbd7F46242aD8E90c5")!,
   privateKey: env("PRIVATE_KEY"),
