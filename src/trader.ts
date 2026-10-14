@@ -225,7 +225,7 @@ export class Trader {
     const depth: TradeState["depth"] = {};
     for (const [k, v] of Object.entries(book.depthBps)) depth[k + "bps"] = { bid: round(v.bid, 1), ask: round(v.ask, 1) };
     return {
-      market: "MON-USDC",
+      market: config.marketLabel,
       block,
       horizonBlocks: H,
       blockMs: 300,
