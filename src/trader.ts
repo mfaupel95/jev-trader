@@ -326,7 +326,7 @@ export class Trader {
 
   private emit(block: number, book: Book, decision: Decision | null, quote: Quote | null, late: boolean, timing: Timing | undefined, skipReason: BlockEvent["skipReason"] = null, decisionAgeBlocks = 0) {
     const t = this.totals;
-    t.gasUsd = t.gasMon * book.mid;
+    t.gasUsd = t.gasMon * config.monPriceUsd;
     const unrealized = this.unrealizedUsd(book.mid);
     t.pnlUsd = t.realizedUsd + unrealized - t.gasUsd;
     t.pnlMon = t.pnlUsd / book.mid;

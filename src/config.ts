@@ -43,6 +43,10 @@ export const config = {
   model: env("MODEL", "mock") as "mock" | "jev",
   jevModelId: env("JEV_MODEL_ID", "jev-latest")!,
   jevUsdPerMTok: 0.042,
+  /** MON/USD for converting gas (paid in MON on Monad) into the pnl report. The mid of MON-USDC itself
+   *  used to serve this on that market; on WETH/cbBTC/XAUt0 the mid is the base token's price, so this
+   *  is a separate, explicit value. Default keeps the old MON-USDC behaviour (mid is then ~identical). */
+  monPriceUsd: Number(env("MON_PRICE_USD", "0.024")),
   port: Number(env("PORT", "3000")),
   historySize: 1000,
 };

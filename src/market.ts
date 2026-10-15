@@ -99,7 +99,7 @@ export class Market {
     const [fee, vault, mon, usdc] = await Promise.allSettled([
       rpc<string>("eth_gasPrice"),
       readVaultParams(config.readRpcUrl, config.market),
-      this.wallet ? this.marginBalance(ZERO_ADDRESS) : Promise.resolve(null),
+      this.wallet ? this.marginBalance(this.params.baseAssetAddress) : Promise.resolve(null),
       this.wallet ? this.marginBalance(this.params.quoteAssetAddress) : Promise.resolve(null),
     ]);
     if (fee.status === "fulfilled") this.feeWei = BN.from(fee.value);
@@ -210,8 +210,10 @@ export class Market {
   /** Top the margin account up to MARGIN_MON / MARGIN_USDC. Runs once at startup, awaiting each receipt. */
   private async ensureMargin() {
     const w = this.wallet!;
+    const base = this.params.baseAssetAddress;
+    const baseNative = base === ZERO_ADDRESS; // MON is the native token on the MON-USDC market; WETH is an ERC20
     const baseDec = this.params.baseAssetDecimals.toNumber(), quoteDec = this.params.quoteAssetDecimals.toNumber();
-    const [monBal, usdcBal] = await Promise.all([this.marginBalance(ZERO_ADDRESS), this.marginBalance(this.params.quoteAssetAddress)]);
+    const [monBal, usdcBal] = await Promise.all([this.marginBalance(base), this.marginBalance(this.params.quoteAssetAddress)]);
     const mon = Number(ethers.utils.formatUnits(monBal, baseDec)), usdc = Number(ethers.utils.formatUnits(usdcBal, quoteDec));
     const deposit = async (token: string, amount: ethers.BigNumber, native: boolean) => {
       const tx = await w.sendTransaction({
@@ -220,10 +222,19 @@ export class Market {
       });
       await tx.wait(1);
     };
+    // ERC20 base (e.g. WETH) needs an allowance first, like the quote token.
+    const ensureAllowance = async (token: string) => {
+      const allowance: ethers.BigNumber = await new ethers.Contract(token, ERC20_ABI, w).allowance(w.address, config.marginAccount);
+      if (allowance.lt(BN.from(1).shl(200))) { const tx = await new ethers.Contract(token, ERC20_ABI, w).approve(config.marginAccount, ethers.constants.MaxUint256, { nonce: this.nonce++ }); await tx.wait(1); }
+    };
+    const depositBase = async (dep: ethers.BigNumber) => {
+      if (baseNative) { await deposit(ZERO_ADDRESS, dep, true); }
+      else { await ensureAllowance(base); await deposit(base, dep, false); }
+    };
     if (mon < config.marginMon) {
       const amt = ethers.utils.parseUnits((config.marginMon - mon).toFixed(6), baseDec);
-      console.log(`margin: depositing ${ethers.utils.formatUnits(amt, baseDec)} MON`);
-      await deposit(ZERO_ADDRESS, amt, true);
+      console.log(`margin: depositing ${ethers.utils.formatUnits(amt, baseDec)} ${baseNative ? "MON" : "base"}`);
+      await depositBase(amt);
     }
     if (usdc < config.marginUsdc) {
       const token = new ethers.Contract(this.params.quoteAssetAddress, ERC20_ABI, w);
