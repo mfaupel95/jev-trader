@@ -1,12 +1,13 @@
 import { config } from "./config";
 import { startBlockFeed } from "./chain";
-import { Market } from "./market";
+import { Market as KuruMarket } from "./market";
+import { Market as HlMarket } from "./market-hl";
 import { createModel } from "./model";
 import { Trader } from "./trader";
 import { log10 } from "./book";
 import { startServer } from "./server";
 
-const market = new Market();
+const market = config.engine === "hyperliquid" ? new HlMarket() : new KuruMarket();
 await market.init();
 const model = createModel();
 
@@ -35,7 +36,14 @@ const trader = new Trader(
     if (quote.status !== "placed") console.log(`#${block} ${quote.status.toUpperCase()} ${quote.side} @ ${quote.price.toFixed(6)} gas ${quote.gasMon.toFixed(6)} MON ${quote.txHash}`);
   },
 );
-trader.attachTradeFeed(log10(market.params.sizePrecision));
+// Kuru: attach the on-chain trade-log feed for fills. Hyperliquid polls userFills in the market client.
+if (config.engine === "kuru") trader.attachTradeFeed(log10(market.params.sizePrecision));
 
-console.log(`jev-trader · model=${model.name} · post-only ${config.quoteInsideTicks} tick inside the touch · horizon ${config.horizonBlocks} blocks · ${config.dryRun ? "DRY RUN" : `wallet ${market.address}`} · market ${config.market} · read ${config.readRpcUrl} · :${config.port}`);
-startBlockFeed((block) => trader.onBlock(block));
+console.log(`jev-trader · engine=${config.engine} · model=${model.name} · post-only ${config.quoteInsideTicks} tick inside the touch · horizon ${config.horizonBlocks} blocks · ${config.dryRun ? "DRY RUN" : `wallet ${market.address}`} · market ${config.market} · read ${config.readRpcUrl} · :${config.port}`);
+if (config.engine === "hyperliquid") {
+  // Hyperliquid has no on-chain block feed; tick every 300ms (Kuru block cadence).
+  let block = 0;
+  setInterval(() => trader.onBlock(++block), 300);
+} else {
+  startBlockFeed((block) => trader.onBlock(block));
+}
