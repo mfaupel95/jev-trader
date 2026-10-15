@@ -272,8 +272,11 @@ export class Trader {
     const exposure = side === "buy" ? this.position.mon + this.restingMon("buy") + size : this.position.mon - this.restingMon("sell") - size;
     if (Math.abs(exposure) > config.maxPositionMon) return false;
     if (!this.market.wallet) return true;
-    // Kuru debits margin when an order is placed, so the balance already excludes what is resting.
-    return side === "buy" ? this.market.margin.usdc >= size * book.ask : this.market.margin.mon >= size;
+    // Kuru debits margin when an order is placed, so the balance already excludes what is resting —
+    // but on thin-margin markets (WETH: ~24 USD per order vs 50 USDC margin) the NEXT order plus the
+    // currently resting/inflight one can exceed the account. Count the resting side too.
+    const resting = this.restingMon(side);
+    return side === "buy" ? this.market.margin.usdc >= (resting + size) * book.ask : this.market.margin.mon >= resting + size;
   }
 
   private buildState(block: number, book: Book): TradeState {
