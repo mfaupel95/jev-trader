@@ -37,6 +37,8 @@ export const config = {
   /** Hyperliquid: Testnet + Coin. */
   hlTestnet: env("HL_TESTNET") === "true",
   hlCoin: env("HL_COIN", "BTC"),
+  /** Hyperliquid: cross leverage (0 = don't set). */
+  hlLeverage: Number(env("HL_LEVERAGE", "0")),
   port: Number(env("PORT", "3000")),
   historySize: 1000,
 };

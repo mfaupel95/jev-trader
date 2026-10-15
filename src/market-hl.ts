@@ -13,6 +13,7 @@ import { config } from "./config";
  *   `margin.usdc` is the free USDC balance.
  * - Fills: /info userFills (polled), not a trade-log feed.
  * - Gas: Hyperliquid charges no per-order gas; gasMon is 0 (fees come out of USDC).
+ * - Perps: leverage set at init (HL_LEVERAGE), funding tracked in `fundingUsd`.
  */
 
 export interface Book {
@@ -56,6 +57,8 @@ const round = (x: number, d: number) => Math.round(x * 10 ** d) / 10 ** d;
 export class Market {
   readonly wallet: Wallet | null = config.dryRun ? null : new Wallet(config.privateKey!);
   margin = { mon: 0, usdc: 0 };
+  /** Cumulative funding paid/received (USDC), refreshed every `refreshBlocks`. */
+  fundingUsd = 0;
   private transport: HttpTransport;
   private info: InfoClient;
   private exchange: ExchangeClient | null = null;
@@ -82,15 +85,29 @@ export class Market {
     if (!coin) throw new Error(`Hyperliquid coin ${config.hlCoin} not in meta`);
     this.assetIndex = meta.universe.indexOf(coin);
     this.szDecimals = coin.szDecimals;
+    // Set leverage (cross) once at startup so the margin covers the position.
+    if (this.exchange && config.hlLeverage > 0) {
+      try {
+        await this.exchange.updateLeverage({ asset: this.assetIndex, isCross: true, leverage: config.hlLeverage });
+        console.log(`hyperliquid: leverage ${config.hlLeverage}x (cross) on ${config.hlCoin}`);
+      } catch (e) {
+        console.warn(`hyperliquid: leverage set failed (${(e as Error).message.slice(0, 100)})`);
+      }
+    }
     await this.refresh();
   }
 
-  /** Every `config.refreshBlocks`: USDC balance + open orders. */
+  /** Every `config.refreshBlocks`: USDC balance + open orders + funding. */
   async refresh() {
     if (!this.wallet) return;
     try {
       const state = await this.info.clearinghouseState({ user: this.wallet.address });
       this.margin.usdc = Number(state.marginSummary?.accountValue ?? 0);
+      // Funding: sum of recent funding payments for our coin (negative = we paid).
+      try {
+        const fh = await this.info.fundingHistory({ coin: config.hlCoin, startTime: Date.now() - 24 * 3600 * 1000 });
+        this.fundingUsd = fh.reduce((s, f) => s + Number(f.fundingRate ?? 0) * Number(f.oi ?? 0), 0);
+      } catch { /* funding optional */ }
     } catch (e) {
       // wallet may not exist on testnet yet — leave margin at 0
     }
