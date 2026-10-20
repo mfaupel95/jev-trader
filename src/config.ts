@@ -39,6 +39,8 @@ export const config = {
   hlCoin: env("HL_COIN", "BTC"),
   /** Hyperliquid: cross leverage (0 = don't set). */
   hlLeverage: Number(env("HL_LEVERAGE", "0")),
+  /** Hyperliquid: liquidation-stop buffer ahead of the liq price, in bps (default 100 = 1%). */
+  hlLiqPufferBps: Number(env("HL_LIQ_PUFFER_BPS", "100")),
   port: Number(env("PORT", "3000")),
   historySize: 1000,
 };
