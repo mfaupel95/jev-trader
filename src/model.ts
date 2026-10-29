@@ -55,6 +55,22 @@ const QUESTIONS = {
   },
 } as const;
 
+/**
+ * Obergrenze fuer EINE Modellanfrage. Ohne sie haengt eine Anfrage, die nie
+ * antwortet, die Pipeline (busy-Flag): jeder folgende Block wird "late" und
+ * es entsteht keine Entscheidung mehr (jev-trader, 29.10.2026: 3000 Bloecke
+ * in Folge ohne Entscheidung, latencyMs 0).
+ */
+const DECIDE_TIMEOUT_MS = Number(process.env.DECIDE_TIMEOUT_MS ?? 5000);
+
+export function mitZeitlimit<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const grenze = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Modellanfrage nach ${ms} ms abgebrochen`)), ms);
+  });
+  return Promise.race([p, grenze]).finally(() => clearTimeout(timer));
+}
+
 /** Real Jev via the AI SDK. Swap-in is the MODEL env var. */
 export class JevModel implements Model {
   readonly name = config.jevModelId;
@@ -62,7 +78,10 @@ export class JevModel implements Model {
 
   async decide(state: TradeState): Promise<Decision> {
     const t0 = performance.now();
-    const r = await experimental_evaluate({ model: this.model, state: state as any, questions: QUESTIONS, maxRetries: 0 });
+    const r = await mitZeitlimit(
+      experimental_evaluate({ model: this.model, state: state as any, questions: QUESTIONS, maxRetries: 0 }),
+      DECIDE_TIMEOUT_MS,
+    );
     const a = r.answers.direction;
     const p = a.probabilities ?? { buy: 0, sell: 0, [a.choice]: 1 };
     const buy = p.buy ?? 0, sell = p.sell ?? 0;
