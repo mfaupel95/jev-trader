@@ -22,7 +22,9 @@ export class DecisionPipeline {
         this.latest = { decision, block };
       })
       .catch((e) => {
-        console.error(`decide() for block ${block}:`, (e as Error).message);
+        // Mit Zeitstempel: das Log soll zeigen, WANN Anfragen scheitern (29.10.: die
+        // Zeit zwischen 15.10. und 28.10. war nicht mehr rekonstruierbar).
+        console.error(`${new Date().toISOString()} decide() for block ${block}:`, (e as Error).message);
       })
       .finally(() => {
         this.busy = false;
