@@ -18,6 +18,10 @@ export const config = {
   quoteInsideTicks: Number(env("QUOTE_INSIDE_TICKS", "1")),
   postMoveBps: Number(env("POST_MOVE_BPS", "5")),
   postRefreshBlocks: Number(env("POST_REFRESH_BLOCKS", "20")),
+  /** TTL fuer den Quote-Refresh in Sekunden; 0 = aus (dann zaehlen Bloecke). */
+  postRefreshSeconds: Number(env("POST_REFRESH_SECONDS", "0")),
+  /** TTL fuer den Buch-Refresh (Guthaben/Position/Funding) in Sekunden; 0 = aus. */
+  refreshSeconds: Number(env("REFRESH_SECONDS", "0")),
   marginMon: Number(env("MARGIN_MON", "600")),
   marginUsdc: Number(env("MARGIN_USDC", "20")),
   gasLimit: num("GAS_LIMIT"),

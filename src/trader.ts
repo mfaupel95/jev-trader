@@ -86,6 +86,7 @@ export class Trader {
   private position = { mon: 0, costUsd: 0 }; // signed inventory and its cost basis
   /** Last block we actually posted an order (gas saver: we skip posting when the market hasn't moved). */
   private lastPost: PostState = { block: 0, mid: 0 };
+  private lastRefreshMs = 0;
   private totals: Totals = { blocks: 0, decisions: 0, quotes: 0, fills: 0, reverted: 0, lateBlocks: 0, jevUsd: 0, gasMon: 0, gasUsd: 0, realizedUsd: 0, pnlUsd: 0, pnlMon: 0, pnlPct: 0 };
 
   constructor(
@@ -107,7 +108,15 @@ export class Trader {
   async onBlock(block: number) {
     this.totals.blocks++;
     this.confirmPending(block); // off the hot path: receipts for earlier blocks' sends
-    if (this.totals.blocks % config.refreshBlocks === 0) this.market.refresh().catch(() => {}); // fee estimate + margin + vault check
+    // Buch-Refresh: Zeit-TTL, wenn gesetzt, sonst weiter der Blockzaehler.
+    const ttlAbgelaufen =
+      config.refreshSeconds > 0 &&
+      this.lastRefreshMs > 0 &&
+      Date.now() - this.lastRefreshMs >= config.refreshSeconds * 1000;
+    if (ttlAbgelaufen || this.totals.blocks % config.refreshBlocks === 0) {
+      this.lastRefreshMs = Date.now();
+      this.market.refresh().catch(() => {}); // fee estimate + margin + vault check
+    }
     if (this.busy) {
       this.totals.lateBlocks++;
       if (this.lastBook) this.emit(block, this.lastBook, null, null, true, undefined, null, 0);
@@ -162,11 +171,11 @@ export class Trader {
         // nothing is resting (then we must post to have an order on the book). The existing resting
         // order stays untouched in between — no cancel, no send.
         const nothingResting = this.orders.size === 0 && this.inflight.size === 0;
-        if (nothingResting || shouldPost(this.lastPost, block, book.mid, { moveBps: config.postMoveBps, refreshBlocks: config.postRefreshBlocks })) {
+        if (nothingResting || shouldPost(this.lastPost, block, book.mid, { moveBps: config.postMoveBps, refreshBlocks: config.postRefreshBlocks, refreshMs: config.postRefreshSeconds * 1000 })) {
           const cancel = [...this.orders.keys()].filter((id) => id > 0); // simulated orders have negative ids
           quote = await this.market.send(block, side, config.tradeSizeMon, book, cancel, side !== wanted);
           this.totals.quotes++;
-          this.lastPost = { block, mid: book.mid };
+          this.lastPost = { block, mid: book.mid, ts: Date.now() };
           if (quote.status === "sim") {
             this.orders.clear(); // the simulated cancel
             this.orders.set(--this.simId, { side, price: quote.price, size: quote.size, block });

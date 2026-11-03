@@ -12,6 +12,8 @@ export interface PostState {
   block: number;
   /** Mid price (USDC per MON) at the last post. */
   mid: number;
+  /** Zeitstempel des letzten Posts in ms (Date.now()). 0/unset = unbekannt. */
+  ts?: number;
 }
 
 export interface PostPolicy {
@@ -19,6 +21,16 @@ export interface PostPolicy {
   moveBps: number;
   /** Post when this many blocks have passed since the last post, even without a move. */
   refreshBlocks: number;
+  /**
+   * Post when this many MILLISECONDS have passed since the last post. 0 = off.
+   *
+   * Grund (03.11.2026): auf Hyperliquid kommt der Kurs nicht ueber neue Bloecke,
+   * sondern ueber Zeit - ein Blockzaehler haengt dort an der Blockrate der Kette
+   * und trifft die Refresh-Frist nur zufaellig. Mit `refreshMs > 0` gilt die
+   * Zeit als Frist; `refreshBlocks` bleibt als Rueckfall aktiv, wenn `refreshMs`
+   * fehlt oder 0 ist (der Kuru-Betrieb verhaelt sich unveraendert).
+   */
+  refreshMs?: number;
 }
 
 /**
@@ -28,9 +40,17 @@ export interface PostPolicy {
  * @param p     policy
  * @returns true if a new order should be posted this block
  */
-export function shouldPost(last: PostState, block: number, mid: number, p: PostPolicy): boolean {
+export function shouldPost(
+  last: PostState,
+  block: number,
+  mid: number,
+  p: PostPolicy,
+  nowMs: number = Date.now(),
+): boolean {
   if (last.block === 0) return true; // first block always posts
   if (p.moveBps <= 0) return true; // 0 = old behaviour, post every block
+  if (p.refreshMs && p.refreshMs > 0 && (last.ts ?? 0) > 0 && nowMs - (last.ts as number) >= p.refreshMs)
+    return true; // TTL abgelaufen
   if (block - last.block >= p.refreshBlocks) return true; // refresh interval reached
   if (last.mid <= 0) return true; // no reference price yet
   const moveBps = Math.abs((mid - last.mid) / last.mid) * 10_000;
