@@ -49,9 +49,12 @@ export function shouldPost(
 ): boolean {
   if (last.block === 0) return true; // first block always posts
   if (p.moveBps <= 0) return true; // 0 = old behaviour, post every block
-  if (p.refreshMs && p.refreshMs > 0 && (last.ts ?? 0) > 0 && nowMs - (last.ts as number) >= p.refreshMs)
-    return true; // TTL abgelaufen
-  if (block - last.block >= p.refreshBlocks) return true; // refresh interval reached
+  const hasTimedRefresh = (p.refreshMs ?? 0) > 0 && (last.ts ?? 0) > 0;
+  if (hasTimedRefresh) {
+    if (nowMs - last.ts! >= p.refreshMs!) return true; // TTL abgelaufen
+  } else if (block - last.block >= p.refreshBlocks) {
+    return true; // Blockfrist nur als Rueckfall ohne nutzbare Zeitfrist
+  }
   if (last.mid <= 0) return true; // no reference price yet
   const moveBps = Math.abs((mid - last.mid) / last.mid) * 10_000;
   return moveBps >= p.moveBps;

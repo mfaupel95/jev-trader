@@ -1,6 +1,7 @@
 import { HttpTransport, InfoClient, ExchangeClient } from "@nktkas/hyperliquid";
 import { Wallet } from "ethers";
 import { config } from "./config";
+import { liquidationStopPrice } from "./liquidation-stop";
 
 /**
  * Hyperliquid Perps market client — drop-in for the Kuru `Market` interface so the
@@ -144,16 +145,14 @@ export class Market {
 
   /**
    * If we hold an open position, place a reduce-only market stop ahead of the liquidation price
-   * (long: stop below liq with a buffer; short: stop above liq). Only placed once per position;
+   * (long: stop above liq with a buffer; short: stop below liq). Only placed once per position;
    * replaced if the liquidation price moved by more than `hlLiqPufferBps` from where we stopped.
    */
   private async liquidationSchutz() {
     if (!this.exchange || !this.position) { this.stopOids.clear(); return; }
     const p = this.position;
-    if (p.szi === 0 || p.liquidationPx === null) return;
-    const buffer = config.hlLiqPufferBps / 10_000;
-    // Stop BEHIND the liquidation price, so we exit first. Market trigger (isMarket: true).
-    const stopPx = p.szi > 0 ? p.liquidationPx * (1 - buffer) : p.liquidationPx * (1 + buffer);
+    const stopPx = liquidationStopPrice(p.szi, p.liquidationPx, config.hlLiqPufferBps);
+    if (stopPx === null) return;
     // Reduce-only, opposite side.
     const reduceSide = p.szi > 0 ? "sell" : "buy";
     try {
